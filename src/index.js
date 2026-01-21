@@ -5,115 +5,101 @@ export default {
     async fetch(request, env) {
         try {
             const url = new URL(request.url);
-            // 1. 管理后台路由
-            if (url.pathname === "/admin") {
-                return await this.handleAdmin(request, env);
-            }
-            // 2. 主程序逻辑
-            return await this.processVideos(env);
+            if (url.pathname === "/admin") return await this.handleAdmin(request, env);
+            
+            // 主程序逻辑：增加重试机制应对 429 错误
+            return await this.processVideosWithRetry(env);
         } catch (e) {
-            // 彻底杜绝 1101，将错误信息直接输出到页面
-            return new Response(`【系统错误】${e.message}\n建议：尝试减少后台监控链接数量，或稍后再试。`, { status: 200 });
+            return new Response(`
+                <div style="padding:20px;font-family:sans-serif;background:#fff5f5;border:1px solid #ffcccc;border-radius:8px;">
+                    <h3 style="color:#d9534f;">⚠️ 触发系统保护</h3>
+                    <p>错误详情: ${e.message}</p>
+                    <p><strong>建议方案：</strong> Cloudflare 限制了浏览器启动频率。请<b>等待 2-5 分钟</b>后再刷新页面。同时请确保后台仅保留 1 个监控链接。</p>
+                    <button onclick="location.reload()">尝试刷新</button>
+                </div>
+            `, { headers: { "Content-Type": "text/html;charset=UTF-8" } });
         }
     },
 
-    // 管理后台
     async handleAdmin(request, env) {
         const ADMIN_PASSWORD = "admin"; 
-
         if (request.method === "POST") {
             const data = await request.formData();
-            if (data.get("password") !== ADMIN_PASSWORD) return new Response("密码错误！", { status: 403 });
+            if (data.get("password") !== ADMIN_PASSWORD) return new Response("密码错误", { status: 403 });
             const urls = data.get("urls").split("\n").map(u => u.trim()).filter(u => u.startsWith("http"));
             await env.URL_KV.put("TARGET_URLS", JSON.stringify(urls));
             return new Response("<script>alert('保存成功！');location.href='/admin';</script>", { headers: { "Content-Type": "text/html;charset=UTF-8" } });
         }
-
-        let displayUrls = ["https://www.youtube.com/watch?v=V1nVrDSZmSE"]; 
+        let displayUrls = ["https://www.youtube.com/watch?v=V1nVrDSZmSE"];
         const stored = await env.URL_KV.get("TARGET_URLS");
         if (stored) displayUrls = JSON.parse(stored);
 
-        return new Response(`
-            <!DOCTYPE html><html><head><meta charset="UTF-8"><title>管理</title>
-            <style>body{font-family:sans-serif;padding:30px;background:#f4f4f9;}.box{background:#fff;padding:20px;border-radius:8px;max-width:500px;margin:auto;box-shadow:0 2px 10px rgba(0,0,0,0.1);}textarea{width:100%;height:150px;margin:10px 0;box-sizing:border-box;}button{width:100%;padding:10px;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;width:100%;}</style></head>
-            <body><div class="box"><h2>⚙️ 监控列表管理</h2><form method="POST"><textarea name="urls">${displayUrls.join("\n")}</textarea><input type="password" name="password" placeholder="管理密码" style="width:100%;margin-bottom:10px;padding:8px;box-sizing:border-box;"><button type="submit">保存更新</button></form><br><a href="/">返回首页</a></div></body></html>
-        `, { headers: { "Content-Type": "text/html;charset=UTF-8" } });
+        return new Response(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>管理</title><style>body{font-family:sans-serif;padding:30px;background:#f4f4f9;}.box{background:#fff;padding:20px;border-radius:8px;max-width:500px;margin:auto;box-shadow:0 2px 10px rgba(0,0,0,0.1);}textarea{width:100%;height:150px;margin:10px 0;box-sizing:border-box;}button{width:100%;padding:10px;background:#007bff;color:#fff;border:none;border-radius:4px;cursor:pointer;width:100%;}</style></head><body><div class="box"><h2>⚙️ 监控列表管理</h2><form method="POST"><textarea name="urls" placeholder="建议只填1个链接">${displayUrls.join("\n")}</textarea><input type="password" name="password" placeholder="管理密码" style="width:100%;margin-bottom:10px;padding:8px;box-sizing:border-box;"><button type="submit">保存更新</button></form><br><a href="/">返回首页</a></div></body></html>`, { headers: { "Content-Type": "text/html;charset=UTF-8" } });
     },
 
-    // 核心处理逻辑
-    async processVideos(env) {
+    async processVideosWithRetry(env, retryCount = 0) {
         const subConverterBase = "https://sb.leelaotou.us.kg";
         let videoUrls = ["https://www.youtube.com/watch?v=V1nVrDSZmSE"];
         const stored = await env.URL_KV.get("TARGET_URLS");
         if (stored) videoUrls = JSON.parse(stored);
 
-        // 免费版只建议跑 1 个，最多 2 个
-        const limitedUrls = videoUrls.slice(0, 2);
-        const browser = await puppeteer.launch(env.BROWSER);
+        const limitedUrls = videoUrls.slice(0, 1); // 极其重要：免费版强制限制为 1 个视频以防 429/1102
+        
+        let browser;
+        try {
+            browser = await puppeteer.launch(env.BROWSER);
+        } catch (e) {
+            // 如果是 429 频率限制且重试次数少于 1，则等待 2 秒重试一次
+            if (e.message.includes("429") && retryCount < 1) {
+                await new Promise(r => setTimeout(r, 2000));
+                return this.processVideosWithRetry(env, retryCount + 1);
+            }
+            throw e;
+        }
+
         let allNodes = [];
         let screenshotData = [];
 
         try {
             for (const url of limitedUrls) {
                 const page = await browser.newPage();
-                
-                // 【关键优化：请求拦截】禁用图片、CSS、字体加载，极大节省内存
+                // 拦截资源减小内存占用
                 await page.setRequestInterception(true);
-                page.on('request', (req) => {
-                    const resourceType = req.resourceType();
-                    if (['image', 'stylesheet', 'font', 'media'].includes(resourceType) && resourceType !== 'media') {
-                        req.abort();
-                    } else {
-                        req.continue();
-                    }
-                });
+                page.on('request', r => ['image','stylesheet','font'].includes(r.resourceType()) ? r.abort() : r.continue());
 
                 await page.setViewport({ width: 640, height: 360 });
+                await page.goto(url, { waitUntil: "networkidle2", timeout: 25000 });
                 
-                try {
-                    // 缩短超时时间
-                    await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 });
-                    
-                    // 尝试播放
-                    await page.evaluate(() => {
-                        const v = document.querySelector('video');
-                        if(v) v.play();
-                    });
-                    
-                    await new Promise(r => setTimeout(r, 4000));
+                await new Promise(r => setTimeout(r, 4000));
 
-                    const res = await page.evaluate(() => {
-                        const v = document.querySelector('video');
-                        if(!v) return null;
-                        const canvas = document.createElement('canvas');
-                        canvas.width = 480; canvas.height = 270; // 进一步压缩画布
-                        const ctx = canvas.getContext('2d');
-                        ctx.drawImage(v, 0, 0, 480, 270);
-                        return {
-                            pixels: Array.from(ctx.getImageData(0, 0, 480, 270).data),
-                            w: 480, h: 270,
-                            img: canvas.toDataURL('image/jpeg', 0.2)
-                        };
-                    });
+                const res = await page.evaluate(() => {
+                    const v = document.querySelector('video');
+                    if(!v) return null;
+                    const canvas = document.createElement('canvas');
+                    canvas.width = 480; canvas.height = 270;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(v, 0, 0, 480, 270);
+                    return {
+                        pixels: Array.from(ctx.getImageData(0, 0, 480, 270).data),
+                        w: 480, h: 270,
+                        img: canvas.toDataURL('image/jpeg', 0.2)
+                    };
+                });
 
-                    if (res) {
-                        const code = jsQR(new Uint8ClampedArray(res.pixels), res.w, res.h);
-                        if (code) {
-                            allNodes.push(code.data);
-                            screenshotData.push({ url, img: res.img });
-                        }
+                if (res) {
+                    const code = jsQR(new Uint8ClampedArray(res.pixels), res.w, res.h);
+                    if (code) {
+                        allNodes.push(code.data);
+                        screenshotData.push({ url, img: res.img });
                     }
-                } catch (e) {
-                    console.error("单个任务失败");
-                } finally {
-                    await page.close(); // 确保及时释放内存
                 }
+                await page.close();
             }
         } finally {
-            await browser.close();
+            if (browser) await browser.close();
         }
 
-        if (allNodes.length === 0) return new Response("未能识别二维码。请尝试：1. 减少后台链接至 1 个 2. 刷新重试 3. 检查视频源是否包含二维码。");
+        if (allNodes.length === 0) return new Response("识别失败。请检查视频中是否有二维码，或尝试刷新。");
 
         const combined = allNodes.join("|");
         const encoded = encodeURIComponent(combined);
@@ -127,15 +113,6 @@ export default {
     },
 
     renderMainUI(links, shots) {
-        return `
-            <!DOCTYPE html><html><head><meta charset="UTF-8"><title>节点聚合</title>
-            <style>body{font-family:sans-serif;background:#f0f2f5;display:flex;flex-direction:column;align-items:center;padding:20px;}.card{background:#fff;border-radius:12px;padding:20px;width:100%;max-width:500px;box-shadow:0 4px 15px rgba(0,0,0,0.05);}.grid img{width:100%;border-radius:8px;margin-bottom:10px;}.link-item{margin:10px 0;padding-bottom:10px;border-bottom:1px solid #eee;}button{padding:5px 10px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;}</style></head>
-            <body><div class="card">
-                <h3>📷 实况画面</h3><div class="grid">${shots.map(s => `<img src="${s.img}">`).join('')}</div><hr>
-                <h3>🔗 订阅链接</h3>
-                ${Object.entries(links).map(([name, url]) => `<div class="link-item"><p style="font-size:12px;color:#666;margin:0;">${name}</p><input type="text" value="${url}" style="width:70%;font-size:10px;" id="${name}"><button onclick="copy('${name}')">复制</button></div>`).join('')}
-            </div><br><a href="/admin" style="color:#999;text-decoration:none;font-size:12px;">⚙️ 管理配置</a>
-            <script>function copy(id){const i=document.getElementById(id);i.select();navigator.clipboard.writeText(i.value);alert('已复制');}</script></body></html>
-        `;
+        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>节点聚合</title><style>body{font-family:sans-serif;background:#f0f2f5;display:flex;flex-direction:column;align-items:center;padding:20px;}.card{background:#fff;border-radius:12px;padding:20px;width:100%;max-width:500px;box-shadow:0 4px 15px rgba(0,0,0,0.05);}.grid img{width:100%;border-radius:8px;margin-bottom:10px;}.link-item{margin:10px 0;padding-bottom:10px;border-bottom:1px solid #eee;}button{padding:5px 10px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;}input{width:65%;font-size:11px;padding:4px;}</style></head><body><div class="card"><h3>📷 实况画面</h3><div class="grid">${shots.map(s => `<img src="${s.img}">`).join('')}</div><hr><h3>🔗 订阅链接</h3>${Object.entries(links).map(([name, url]) => `<div class="link-item"><p style="font-size:12px;color:#666;margin:0;">${name}</p><input type="text" value="${url}" id="${name}"><button onclick="copy('${name}')">复制</button></div>`).join('')}</div><br><a href="/admin" style="color:#999;text-decoration:none;font-size:12px;">⚙️ 管理配置</a><script>function copy(id){const i=document.getElementById(id);i.select();navigator.clipboard.writeText(i.value);alert('已复制');}</script></body></html>`;
     }
 };

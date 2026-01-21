@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main  # 当代码推送到 main 分支时触发
-
+     workflow_dispatch:      # 添加这一行，手动运行按钮就会出现了
 jobs:
   deploy:
     runs-on: ubuntu-latest

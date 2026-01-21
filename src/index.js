@@ -57,15 +57,22 @@ export default {
       }
 
       const nodeLink = code.data;
-      const encodedNode = encodeURIComponent(nodeLink);
+      // 关键：不需要对 nodeLink 进行 encodeURIComponent，或者根据后端要求调整
+      const rawNode = nodeLink; 
 
-      // 生成各种客户端订阅链接
+      // 重新构建全平台订阅链接
       const subLinks = {
-        "Clash": `${subConverterBase}/sub?target=clash&url=${encodedNode}&insert=false&emoji=true&list=false&udp=true`,
-        "V2Ray": `${subConverterBase}/sub?target=v2ray&url=${encodedNode}&insert=false&emoji=true&list=false&udp=true`,
-        "Sing-box": `${subConverterBase}/sub?target=singbox&url=${encodedNode}&insert=false&emoji=true&list=false&udp=true`,
-        "QuantumultX": `${subConverterBase}/sub?target=quanx&url=${encodedNode}&insert=false&emoji=true&list=false&udp=true`,
-        "Surge": `${subConverterBase}/sub?target=surge&ver=4&url=${encodedNode}&insert=false&emoji=true&list=false&udp=true`
+        // V2Ray 专用修复：路径改为 /xray，移除多余参数
+        "V2Ray": `${subConverterBase}/xray?config=${encodeURIComponent(rawNode)}`,
+        
+        // Clash 依然使用 /sub 路径，这是标准的
+        "Clash": `${subConverterBase}/sub?target=clash&url=${encodeURIComponent(rawNode)}&insert=false&emoji=true&list=false`,
+        
+        // Sing-box 订阅
+        "Sing-box": `${subConverterBase}/sub?target=singbox&url=${encodeURIComponent(rawNode)}&insert=false&emoji=true&list=false`,
+        
+        // 原始链接（通用导入）
+        "原始链接": rawNode
       };
 
       // 返回美化的 HTML 界面

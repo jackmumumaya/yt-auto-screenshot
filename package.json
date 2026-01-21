@@ -1,7 +1,11 @@
 {
   "name": "yt-auto-screenshot",
   "version": "1.0.0",
+  "devDependencies": {
+    "wrangler": "latest"
+  },
   "dependencies": {
-    "@cloudflare/puppeteer": "latest"
+    "@cloudflare/puppeteer": "latest",
+    "jsqr": "^1.4.0"
   }
 }

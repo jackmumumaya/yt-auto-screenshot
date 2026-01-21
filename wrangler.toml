@@ -12,5 +12,9 @@ binding = "BROWSER"
 binding = "MY_BUCKET"
 bucket_name = "yt-screenshots"
 
+[[kv_namespaces]]
+binding = "URL_KV"
+id = "YT_CONFIG"
+
 [triggers]
 crons = ["*/30 * * * *"]

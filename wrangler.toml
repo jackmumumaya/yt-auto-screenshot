@@ -14,7 +14,7 @@ bucket_name = "yt-screenshots"
 
 [[kv_namespaces]]
 binding = "URL_KV"
-id = "YT_CONFIG"
+id = "f43ab2c8eb6c4bbe8d152a11d8d835a6"
 
 [triggers]
 crons = ["*/30 * * * *"]

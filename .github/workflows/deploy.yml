@@ -20,5 +20,4 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # 增加这一行，强制指定配置文件位置，防止找不到文件
-          wranglerVersion: '3'
+         

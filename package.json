@@ -1,0 +1,7 @@
+{
+  "name": "yt-auto-screenshot",
+  "version": "1.0.0",
+  "dependencies": {
+    "@cloudflare/puppeteer": "latest"
+  }
+}

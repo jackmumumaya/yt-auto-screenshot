@@ -30,8 +30,16 @@ export default {
             return new Response("<script>alert('保存成功！');location.href='/admin';</script>", { headers: { "Content-Type": "text/html" } });
         }
 
-        const stored = await env.URL_KV.get("TARGET_URLS");
-        const currentUrls = stored ? JSON.parse(stored) : ["https://www.youtube.com/watch?v=V1nVrDSZmSE"];
+       // 修改后的健壮逻辑
+let videoUrls = ["https://www.youtube.com/watch?v=V1nVrDSZmSE"]; // 设置一个默认值
+try {
+    const stored = await env.URL_KV.get("TARGET_URLS");
+    if (stored) {
+        videoUrls = JSON.parse(stored);
+    }
+} catch (e) {
+    console.error("KV读取失败，使用默认视频列表:", e);
+}
 
         return new Response(`
             <!DOCTYPE html>

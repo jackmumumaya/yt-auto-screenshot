@@ -1,54 +1,88 @@
 import puppeteer from "@cloudflare/puppeteer";
 
 export default {
-  // 1. 处理手动访问 (浏览器打开 URL)
-  async fetch(request, env) {
-    return await this.takeScreenshot(env);
-  },
+    async fetch(request, env) {
+        return await this.processVideo(env);
+    },
 
-  // 2. 处理定时任务 (Cron Trigger)
-  async scheduled(event, env, ctx) {
-    ctx.waitUntil(this.takeScreenshot(env));
-  },
+    async scheduled(event, env, ctx) {
+        ctx.waitUntil(this.processVideo(env));
+    },
 
-  // 核心截图逻辑
-  async takeScreenshot(env) {
-    const url = "https://www.youtube.com/watch?v=V1nVrDSZmSE";
-    const browser = await puppeteer.launch(env.BROWSER);
-    const page = await browser.newPage();
+    async processVideo(env) {
+        const videoUrl = "https://www.youtube.com/watch?v=V1nVrDSZmSE";
+        const subConverterBase = "https://sb.leelaotou.us.kg"; // 订阅转换后端
+        
+        const browser = await puppeteer.launch(env.BROWSER);
+        const page = await browser.newPage();
 
-    try {
-      await page.setViewport({ width: 1280, height: 720 });
-      
-      // 访问 YouTube 并等待网络空闲
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
+        try {
+            await page.setViewport({ width: 1920, height: 1080 });
+            await page.goto(videoUrl, { waitUntil: "networkidle2" });
 
-      // 简单处理：隐藏弹窗并播放视频
-      await page.evaluate(() => {
-        const video = document.querySelector('video');
-        if (video) video.play();
-        // 隐藏 YouTube 控制栏以防遮挡二维码
-        const controls = document.querySelector('.ytp-chrome-bottom');
-        if (controls) controls.style.display = 'none';
-      });
+            // 1. 播放视频并隐藏 UI
+            await page.evaluate(() => {
+                const video = document.querySelector('video');
+                if (video) video.play();
+                const controls = document.querySelector('.ytp-chrome-bottom');
+                if (controls) controls.style.display = 'none';
+            });
 
-      // 等待 5 秒确保直播加载出画面
-      await new Promise(r => setTimeout(r, 5000));
+            // 等待画面稳定
+            await new Promise(r => setTimeout(r, 5000));
 
-      const screenshot = await page.screenshot({ type: "png" });
+            // 2. 在浏览器内部注入 jsQR 并识别二维码
+            // 我们通过 evaluate 执行一段复杂的 JS，直接返回识别出的字符串
+            const nodeLink = await page.evaluate(async () => {
+                // 动态加载 jsQR 库
+                const script = document.createElement('script');
+                script.src = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js";
+                document.head.appendChild(script);
+                
+                await new Promise(r => script.onload = r);
 
-      // 将截图保存到 R2 存储桶，文件名带上时间戳
-      const fileName = `screenshot-${new Date().toISOString()}.png`;
-      await env.MY_BUCKET.put(fileName, screenshot, {
-        httpMetadata: { contentType: "image/png" }
-      });
+                const video = document.querySelector('video');
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                
+                return code ? code.data : null;
+            });
 
-      await browser.close();
-      return new Response(`成功截取并保存至 R2: ${fileName}`, { status: 200 });
+            if (!nodeLink) {
+                await browser.close();
+                return new Response("未在视频中识别到二维码", { status: 404 });
+            }
 
-    } catch (e) {
-      await browser.close();
-      return new Response(`错误: ${e.message}`, { status: 500 });
+            // 3. 构建 Clash 订阅链接
+            // 订阅转换通常格式: backend/sub?target=clash&url=节点链接(需要编码)
+            const encodedNode = encodeURIComponent(nodeLink);
+            const clashSubUrl = `${subConverterBase}/sub?target=clash&url=${encodedNode}&insert=false&config=base&emoji=true&list=false&udp=true&tfo=false&scv=false&fdn=false&sort=false`;
+
+            // 4. (可选) 将结果保存到 R2 方便以后查看
+            const timestamp = new Date().getTime();
+            await env.MY_BUCKET.put(`nodes/${timestamp}.txt`, `Node: ${nodeLink}\nClash: ${clashSubUrl}`);
+
+            await browser.close();
+
+            // 返回结果给用户
+            return new Response(JSON.stringify({
+                status: "success",
+                original_node: nodeLink,
+                clash_subscription: clashSubUrl,
+                note: "你可以直接将 clash_subscription 复制到 Clash 客户端使用"
+            }), {
+                headers: { "Content-Type": "application/json" }
+            });
+
+        } catch (e) {
+            await browser.close();
+            return new Response("处理失败: " + e.message, { status: 500 });
+        }
     }
-  }
 };

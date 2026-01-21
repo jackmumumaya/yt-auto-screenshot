@@ -16,30 +16,34 @@ export default {
 
     // 管理后台界面
     async handleAdmin(request, env) {
-        const ADMIN_PASSWORD = "admin"; // 【请修改你的管理密码】
+        const ADMIN_PASSWORD = "admin"; // 【记得在这里修改密码】
 
         if (request.method === "POST") {
-            const data = await request.formData();
-            const password = data.get("password");
-            const urlsText = data.get("urls");
+            try {
+                const data = await request.formData();
+                const password = data.get("password");
+                const urlsText = data.get("urls");
 
-            if (password !== ADMIN_PASSWORD) return new Response("密码错误！", { status: 403 });
+                if (password !== ADMIN_PASSWORD) return new Response("密码错误！", { status: 403 });
 
-            const urls = urlsText.split("\n").map(u => u.trim()).filter(u => u.startsWith("http"));
-            await env.URL_KV.put("TARGET_URLS", JSON.stringify(urls));
-            return new Response("<script>alert('保存成功！');location.href='/admin';</script>", { headers: { "Content-Type": "text/html" } });
+                const urls = urlsText.split("\n").map(u => u.trim()).filter(u => u.startsWith("http"));
+                await env.URL_KV.put("TARGET_URLS", JSON.stringify(urls));
+                return new Response("<script>alert('保存成功！');location.href='/admin';</script>", { headers: { "Content-Type": "text/html" } });
+            } catch (e) {
+                return new Response("提交失败: " + e.message, { status: 500 });
+            }
         }
 
-       // 修改后的健壮逻辑
-let videoUrls = ["https://www.youtube.com/watch?v=V1nVrDSZmSE"]; // 设置一个默认值
-try {
-    const stored = await env.URL_KV.get("TARGET_URLS");
-    if (stored) {
-        videoUrls = JSON.parse(stored);
-    }
-} catch (e) {
-    console.error("KV读取失败，使用默认视频列表:", e);
-}
+        // --- 修复点：统一变量名为 displayUrls ---
+        let displayUrls = ["https://www.youtube.com/watch?v=V1nVrDSZmSE"]; 
+        try {
+            const stored = await env.URL_KV.get("TARGET_URLS");
+            if (stored) {
+                displayUrls = JSON.parse(stored);
+            }
+        } catch (e) {
+            console.error("KV读取失败，使用默认列表");
+        }
 
         return new Response(`
             <!DOCTYPE html>
@@ -50,20 +54,25 @@ try {
                 <h2>⚙️ 监控列表管理</h2>
                 <form method="POST">
                     <label>视频链接 (每行一个):</label>
-                    <textarea name="urls">${currentUrls.join("\n")}</textarea>
+                    <textarea name="urls">${displayUrls.join("\n")}</textarea>
                     <input type="password" name="password" placeholder="输入后台密码" required>
                     <button type="submit">保存更新</button>
                 </form>
                 <br><a href="/">返回首页</a>
             </div></body></html>
-        `, { headers: { "Content-Type": "text/html" } });
+        `, { headers: { "Content-Type": "text/html;charset=UTF-8" } });
     },
 
     // 核心识别逻辑
     async processVideos(env) {
         const subConverterBase = "https://sb.leelaotou.us.kg";
-        const stored = await env.URL_KV.get("TARGET_URLS");
-        const videoUrls = stored ? JSON.parse(stored) : ["https://www.youtube.com/watch?v=V1nVrDSZmSE"];
+        
+        // 增加兜底逻辑，防止 KV 异常导致首页崩溃
+        let videoUrls = ["https://www.youtube.com/watch?v=V1nVrDSZmSE"];
+        try {
+            const stored = await env.URL_KV.get("TARGET_URLS");
+            if (stored) videoUrls = JSON.parse(stored);
+        } catch(e) { console.error("KV访问受限"); }
 
         const browser = await puppeteer.launch(env.BROWSER);
         let allNodes = [];
@@ -75,7 +84,6 @@ try {
                 await page.setViewport({ width: 1280, height: 720 });
                 try {
                     await page.goto(url, { waitUntil: "networkidle2", timeout: 30000 });
-                    // 确保播放
                     await page.evaluate(() => {
                         const v = document.querySelector('video');
                         if(v) v.play();
@@ -84,6 +92,7 @@ try {
 
                     const res = await page.evaluate(() => {
                         const v = document.querySelector('video');
+                        if(!v) return null;
                         const canvas = document.createElement('canvas');
                         canvas.width = v.videoWidth; canvas.height = v.videoHeight;
                         const ctx = canvas.getContext('2d');
@@ -95,10 +104,12 @@ try {
                         };
                     });
 
-                    const code = jsQR(new Uint8ClampedArray(res.pixels), res.w, res.h);
-                    if (code) {
-                        allNodes.push(code.data);
-                        screenshotData.push({ url, img: res.img });
+                    if (res) {
+                        const code = jsQR(new Uint8ClampedArray(res.pixels), res.w, res.h);
+                        if (code) {
+                            allNodes.push(code.data);
+                            screenshotData.push({ url, img: res.img });
+                        }
                     }
                 } catch (e) { console.log("视频加载失败: " + url); }
                 await page.close();
@@ -107,7 +118,6 @@ try {
 
             if (allNodes.length === 0) return new Response("未能识别到二维码，请检查监控视频是否在线。", { status: 404 });
 
-            // 合并节点
             const combined = allNodes.join("|");
             const encoded = encodeURIComponent(combined);
 
@@ -135,7 +145,7 @@ try {
                 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:15px 0;}
                 .grid img{width:100%;border-radius:8px;border:1px solid #eee;}
                 .link-item{margin:15px 0;border-bottom:1px solid #f0f0f0;padding-bottom:10px;}
-                input{width:78%;padding:8px;border:1px solid #ddd;border-radius:4px;background:#fafafa;}
+                input{width:70%;padding:8px;border:1px solid #ddd;border-radius:4px;background:#fafafa;font-size:12px;}
                 button{padding:8px 12px;background:#28a745;color:#fff;border:none;border-radius:4px;cursor:pointer;}
                 .admin-btn{color:#999;text-decoration:none;font-size:0.8rem;}
             </style></head>
@@ -158,7 +168,9 @@ try {
                     function copy(id){
                         const i = document.getElementById(id); i.select();
                         navigator.clipboard.writeText(i.value);
-                        alert('已复制！');
+                        const btn = event.target;
+                        btn.innerText = '已复制';
+                        setTimeout(() => btn.innerText = '复制', 2000);
                     }
                 </script>
             </body></html>

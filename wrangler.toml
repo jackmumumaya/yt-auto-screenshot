@@ -2,15 +2,15 @@ name = "yt-auto-screenshot"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# 绑定浏览器渲染服务
+# 强制开启浏览器渲染绑定
 [browser]
 binding = "BROWSER"
 
-# 绑定 R2 存储桶，用于保存图片
+# 强制开启 R2 绑定
 [[r2_buckets]]
 binding = "MY_BUCKET"
 bucket_name = "yt-screenshots"
 
-# (可选) 定时触发器：每 30 分钟自动截图一次
+# 自动触发设置
 [triggers]
 crons = ["*/30 * * * *"]

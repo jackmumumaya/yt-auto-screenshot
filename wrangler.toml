@@ -2,15 +2,15 @@ name = "yt-auto-screenshot"
 main = "src/index.js"
 compatibility_date = "2024-01-01"
 
-# 强制开启浏览器渲染绑定
+# 关键：添加这一行来解决 node:buffer 的报错
+compatibility_flags = [ "nodejs_compat" ]
+
 [browser]
 binding = "BROWSER"
 
-# 强制开启 R2 绑定
 [[r2_buckets]]
 binding = "MY_BUCKET"
 bucket_name = "yt-screenshots"
 
-# 自动触发设置
 [triggers]
 crons = ["*/30 * * * *"]
